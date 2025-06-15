@@ -1,0 +1,437 @@
+import streamlit as st
+import json
+import os
+from hashlib import sha256
+from typing import Dict, List, Optional
+from datetime import datetime
+
+# File to store user credentials and groups
+USERS_DB_FILE = "users.json"
+GROUPS_DB_FILE = "groups.json"
+
+def init_db():
+    """Initialize database files if they don't exist"""
+    # Initialize users file
+    if not os.path.exists(USERS_DB_FILE):
+        with open(USERS_DB_FILE, "w") as f:
+            json.dump({}, f)
+    else:
+        # Ensure existing users have groups field
+        try:
+            with open(USERS_DB_FILE, "r") as f:
+                users = json.load(f)
+            updated = False
+            for username in users:
+                if "groups" not in users[username]:
+                    users[username]["groups"] = []
+                    updated = True
+            if updated:
+                with open(USERS_DB_FILE, "w") as f:
+                    json.dump(users, f)
+        except Exception as e:
+            st.error(f"Error updating users file: {str(e)}")
+
+    # Initialize groups file
+    if not os.path.exists(GROUPS_DB_FILE):
+        with open(GROUPS_DB_FILE, "w") as f:
+            json.dump({}, f)
+
+def hash_password(password: str) -> str:
+    """Hash password using SHA-256"""
+    return sha256(password.encode()).hexdigest()
+
+def load_users() -> Dict:
+    """Load users from the JSON file"""
+    try:
+        with open(USERS_DB_FILE, "r") as f:
+            return json.load(f)
+    except Exception as e:
+        st.error(f"Error loading users: {str(e)}")
+        return {}
+
+def save_users(users: Dict):
+    """Save users to the JSON file"""
+    try:
+        with open(USERS_DB_FILE, "w") as f:
+            json.dump(users, f)
+    except Exception as e:
+        st.error(f"Error saving users: {str(e)}")
+
+def load_groups() -> Dict:
+    """Load groups from the JSON file"""
+    try:
+        with open(GROUPS_DB_FILE, "r") as f:
+            return json.load(f)
+    except Exception as e:
+        st.error(f"Error loading groups: {str(e)}")
+        return {}
+
+def save_groups(groups: Dict):
+    """Save groups to the JSON file"""
+    try:
+        with open(GROUPS_DB_FILE, "w") as f:
+            json.dump(groups, f)
+    except Exception as e:
+        st.error(f"Error saving groups: {str(e)}")
+
+def create_user(username: str, password: str) -> bool:
+    """Create a new user"""
+    users = load_users()
+    if username in users:
+        return False
+    
+    users[username] = {
+        "password": hash_password(password),
+        "created_at": datetime.now().isoformat(),
+        "groups": []  # List of group IDs the user belongs to
+    }
+    save_users(users)
+    return True
+
+def authenticate_user(username: str, password: str) -> bool:
+    """Authenticate user credentials"""
+    users = load_users()
+    if username not in users:
+        return False
+    
+    return users[username]["password"] == hash_password(password)
+
+def create_group(name: str, creator_username: str, description: str = "") -> str:
+    """Create a new expense group"""
+    try:
+        groups = load_groups()
+        users = load_users()
+        
+        # Generate a unique group ID
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        group_id = f"group_{timestamp}_{len(groups)}"
+        
+        # Create the group
+        groups[group_id] = {
+            "name": name,
+            "description": description,
+            "creator": creator_username,
+            "members": [creator_username],
+            "created_at": datetime.now().isoformat(),
+            "invites_pending": []
+        }
+        
+        # Add group to user's groups
+        if creator_username in users:
+            if "groups" not in users[creator_username]:
+                users[creator_username]["groups"] = []
+            users[creator_username]["groups"].append(group_id)
+            
+            save_groups(groups)
+            save_users(users)
+            return group_id
+        else:
+            st.error("Creator user not found")
+            return ""
+    except Exception as e:
+        st.error(f"Error creating group: {str(e)}")
+        return ""
+
+def invite_to_group(group_id: str, username: str, inviter_username: str) -> bool:
+    """Invite a user to a group"""
+    try:
+        groups = load_groups()
+        users = load_users()
+        
+        if (group_id not in groups or 
+            username not in users or 
+            inviter_username not in groups[group_id]["members"]):
+            return False
+        
+        if username not in groups[group_id]["invites_pending"] and username not in groups[group_id]["members"]:
+            groups[group_id]["invites_pending"].append(username)
+            save_groups(groups)
+            return True
+        return False
+    except Exception as e:
+        st.error(f"Error inviting to group: {str(e)}")
+        return False
+
+def accept_group_invite(group_id: str, username: str) -> bool:
+    """Accept a group invitation"""
+    try:
+        groups = load_groups()
+        users = load_users()
+        
+        if (group_id not in groups or 
+            username not in groups[group_id]["invites_pending"]):
+            return False
+        
+        # Add user to group
+        groups[group_id]["members"].append(username)
+        groups[group_id]["invites_pending"].remove(username)
+        
+        # Add group to user's groups
+        if "groups" not in users[username]:
+            users[username]["groups"] = []
+        users[username]["groups"].append(group_id)
+        
+        save_groups(groups)
+        save_users(users)
+        return True
+    except Exception as e:
+        st.error(f"Error accepting invite: {str(e)}")
+        return False
+
+def get_user_groups(username: str) -> List[Dict]:
+    """Get all groups a user belongs to"""
+    try:
+        users = load_users()
+        groups = load_groups()
+        
+        if username not in users:
+            return []
+        
+        if "groups" not in users[username]:
+            users[username]["groups"] = []
+            save_users(users)
+            return []
+        
+        user_groups = []
+        for group_id in users[username]["groups"]:
+            if group_id in groups:
+                group_info = groups[group_id].copy()
+                group_info["id"] = group_id
+                user_groups.append(group_info)
+        
+        return user_groups
+    except Exception as e:
+        st.error(f"Error getting user groups: {str(e)}")
+        return []
+
+def get_user_pending_invites(username: str) -> List[Dict]:
+    """Get all pending group invites for a user"""
+    try:
+        groups = load_groups()
+        
+        pending_invites = []
+        for group_id, group_info in groups.items():
+            if username in group_info.get("invites_pending", []):
+                invite_info = {
+                    "group_id": group_id,
+                    "group_name": group_info["name"],
+                    "creator": group_info["creator"],
+                    "description": group_info.get("description", "")
+                }
+                pending_invites.append(invite_info)
+        
+        return pending_invites
+    except Exception as e:
+        st.error(f"Error getting pending invites: {str(e)}")
+        return []
+
+def login_page():
+    """Display and handle login page"""
+    if "user_logged_in" not in st.session_state:
+        st.session_state.user_logged_in = False
+        st.session_state.username = None
+
+    if not st.session_state.user_logged_in:
+        st.markdown("""
+            <style>
+            .auth-container {
+                max-width: 380px;
+                margin: 2rem auto;
+                padding: 0;
+                background: url('https://raw.githubusercontent.com/cursor-ai/cursor-images/main/bus-travel.png');
+                background-size: cover;
+                background-position: center;
+                border-radius: 12px;
+                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+                overflow: hidden;
+                min-height: 280px;
+            }
+            .auth-overlay {
+                background: linear-gradient(to bottom, rgba(255, 255, 255, 0.98), rgba(255, 255, 255, 0.92));
+                backdrop-filter: blur(4px);
+                padding: 1.4rem;
+                border-radius: 12px;
+                min-height: 280px;
+            }
+            .auth-title {
+                text-align: center;
+                color: #2C3E50;
+                margin-bottom: 0.4rem;
+                font-size: 1.3rem;
+                font-weight: 800;
+                text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.1);
+            }
+            .auth-subtitle {
+                text-align: center;
+                color: #4a5568;
+                margin-bottom: 1rem;
+                font-size: 0.8rem;
+                font-weight: 500;
+            }
+            .auth-form {
+                max-width: 300px;
+                margin: 0 auto;
+                padding: 0.8rem 0;
+            }
+            .stTextInput>div>div>input {
+                max-width: 140px !important;
+                font-size: 0.85rem !important;
+                padding: 0.3rem 0.5rem !important;
+                border-radius: 5px !important;
+                border: 1px solid #e2e8f0 !important;
+                margin: 0 !important;
+                text-indent: 0 !important;
+                background: white !important;
+                height: 30px !important;
+            }
+            .stButton>button {
+                max-width: 280px !important;
+                background-color: #4f46e5 !important;
+                color: white;
+                padding: 0.5rem !important;
+                font-size: 0.9rem;
+                font-weight: 600;
+                border-radius: 6px;
+                border: none;
+                cursor: pointer;
+                transition: all 0.3s ease;
+                margin: 0.8rem auto 0 !important;
+                display: block !important;
+            }
+            .stButton>button:hover {
+                background-color: #4338ca !important;
+                transform: translateY(-2px);
+            }
+            .input-label {
+                font-size: 0.85rem !important;
+                font-weight: 500 !important;
+                color: #2C3E50 !important;
+                margin: 0 !important;
+                padding: 0.3rem 0 !important;
+                min-width: 75px !important;
+            }
+            .input-group {
+                display: flex !important;
+                align-items: center !important;
+                gap: 0.6rem !important;
+                margin-bottom: 0.5rem !important;
+                justify-content: center !important;
+            }
+            /* Hide default Streamlit label */
+            .stTextInput label {
+                display: none !important;
+            }
+            .form-container {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                gap: 0.3rem;
+            }
+            /* Make input boxes shorter */
+            .stTextInput>div {
+                min-height: unset !important;
+            }
+            .stTextInput>div>div {
+                min-height: unset !important;
+            }
+            </style>
+        """, unsafe_allow_html=True)
+
+        st.markdown("""
+            <div class="auth-container">
+                <div class="auth-overlay">
+                    <h1 class="auth-title">✈️ Travel Expense Tracker</h1>
+                    <p class="auth-subtitle">Track your group travel expenses with ease and style</p>
+        """, unsafe_allow_html=True)
+            
+        if "show_signup" not in st.session_state:
+            st.session_state.show_signup = False
+
+        if st.session_state.show_signup:
+            st.markdown('<h2 class="auth-title" style="font-size: 1.2rem;">Create Your Account</h2>', unsafe_allow_html=True)
+            with st.form("signup_form", clear_on_submit=False):
+                st.markdown('<div class="form-container">', unsafe_allow_html=True)
+                st.markdown('<div class="input-group">', unsafe_allow_html=True)
+                st.markdown('<div class="input-label">👤 Username</div>', unsafe_allow_html=True)
+                new_username = st.text_input("Username", key="signup_username", placeholder="Enter username", label_visibility="collapsed")
+                st.markdown('</div>', unsafe_allow_html=True)
+                
+                st.markdown('<div class="input-group">', unsafe_allow_html=True)
+                st.markdown('<div class="input-label">🔒 Password</div>', unsafe_allow_html=True)
+                new_password = st.text_input("Password", type="password", key="signup_password", placeholder="Enter password", label_visibility="collapsed")
+                st.markdown('</div>', unsafe_allow_html=True)
+                
+                st.markdown('<div class="input-group">', unsafe_allow_html=True)
+                st.markdown('<div class="input-label">🔒 Confirm</div>', unsafe_allow_html=True)
+                confirm_password = st.text_input("Confirm Password", type="password", placeholder="Confirm password", label_visibility="collapsed")
+                st.markdown('</div>', unsafe_allow_html=True)
+                st.markdown('</div>', unsafe_allow_html=True)
+                
+                signup_button = st.form_submit_button("✨ Sign Up")
+
+                if signup_button:
+                    if not new_username or not new_password:
+                        st.error("Please fill in all fields")
+                    elif new_password != confirm_password:
+                        st.error("Passwords do not match")
+                    elif create_user(new_username, new_password):
+                        st.success("Account created successfully! Please log in.")
+                        st.session_state.show_signup = False
+                    else:
+                        st.error("Username already exists")
+
+            col1, col2, col3 = st.columns([1,2,1])
+            with col2:
+                if st.button("← Back to Login"):
+                    st.session_state.show_signup = False
+                    st.rerun()
+        else:
+            st.markdown('<h2 class="auth-title" style="font-size: 1.2rem;">Hi, Welcome! :)</h2>', unsafe_allow_html=True)
+            with st.form("login_form", clear_on_submit=True):
+                st.markdown('<div class="form-container">', unsafe_allow_html=True)
+                st.markdown('<div class="input-group">', unsafe_allow_html=True)
+                st.markdown('<div class="input-label">👤 Username</div>', unsafe_allow_html=True)
+                username = st.text_input("Username", key="login_username", placeholder="Enter username", label_visibility="collapsed")
+                st.markdown('</div>', unsafe_allow_html=True)
+                
+                st.markdown('<div class="input-group">', unsafe_allow_html=True)
+                st.markdown('<div class="input-label">🔒 Password</div>', unsafe_allow_html=True)
+                password = st.text_input("Password", type="password", key="login_password", placeholder="Enter password", label_visibility="collapsed")
+                st.markdown('</div>', unsafe_allow_html=True)
+                st.markdown('</div>', unsafe_allow_html=True)
+                
+                login_button = st.form_submit_button("🚀 Log In")
+
+                if login_button:
+                    if not username or not password:
+                        st.error("Please enter both username and password")
+                    elif authenticate_user(username, password):
+                        st.session_state.user_logged_in = True
+                        st.session_state.username = username
+                        st.success("🎉 Login successful! Welcome back, " + username + "! Redirecting to dashboard...")
+                        st.rerun()
+                    else:
+                        users = load_users()
+                        if username not in users:
+                            st.error("❌ Account not found! Please create an account first.")
+                        else:
+                            st.error("❌ Invalid password. Please try again.")
+
+            col1, col2, col3 = st.columns([1,2,1])
+            with col2:
+                if st.button("✨ Create New Account"):
+                    st.session_state.show_signup = True
+                    st.rerun()
+
+        st.markdown('</div></div>', unsafe_allow_html=True)
+
+    return st.session_state.user_logged_in, st.session_state.username
+
+def logout():
+    """Log out the current user"""
+    st.session_state.user_logged_in = False
+    st.session_state.username = None
+    st.rerun()
+
+# Initialize database when the module is imported
+init_db() 
